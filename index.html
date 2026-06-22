@@ -203,164 +203,85 @@ return n;
 }
 
 function buildLevel(){
-// Platform A: Main cloud (center) - tiles at y=0
-// Roughly circular: a cluster of tiles
 const mainTiles=[
 {x:0,z:0},{x:1,z:0},{x:-1,z:0},{x:0,z:1},{x:0,z:-1},
-{x:1,z:1},{x:-1,z:-1},{x:1,z:-1},{x:-1,z:1},
-{x:2,z:0},{x:-2,z:0},{x:0,z:2},{x:0,z:-2},
-{x:2,z:1},{x:2,z:-1},{x:-2,z:1},{x:-2,z:-1},
-{x:1,z:2},{x:-1,z:2},{x:1,z:-2},{x:-1,z:-2}
+{x:1,z:-1},{x:-1,z:-1},{x:0,z:-2},{x:1,z:-2},{x:-1,z:-2},
+{x:2,z:1},{x:2,z:0},{x:-1,z:1}
 ];
-
-// Pit location
-const pitPos={x:2,z:0};
-// Door location
-const doorPos={x:3,z:0};
-
-// Remove pit tile from walkable initially, add door tile
+const pitPos={x:1,z:1};
+const doorPos={x:2,z:1};
+state.pitPos=pitPos;
+state.doorPos=doorPos;
+state.bridgeCenter={x:-2,z:0};
+state.sheepPos={x:0,z:-2};
 const walkableMain=mainTiles.filter(t=>!(t.x===pitPos.x&&t.z===pitPos.z));
-walkableMain.push({x:3,z:0}); // door tile
-
-// Build main platform visual
-const mainPlatGroup=new THREE.Group();
-const mainBase=makeTieredPlatform(5.5,5.5,1.2,3,'#f8f8f6',0,-0.8,0);
-mainPlatGroup.add(mainBase);
-// Door extension
-const doorExt=makeCloudPlatform(1.2,1.2,0.8,'#e8eef4',3,-0.4,0);
-mainPlatGroup.add(doorExt);
-scene.add(mainPlatGroup);
-
-// Add nodes for main platform
+const mainGeos=[];
+mainTiles.forEach(t=>{
+const bg=new THREE.BoxGeometry(0.95,0.5,0.95);
+bg.translate(t.x*TILE,0,t.z*TILE);mainGeos.push(bg);
+});
+for(let i=0;i<10;i++){
+const bump=new THREE.SphereGeometry(0.1,6,5);
+bump.translate((Math.random()-0.5)*4.5,0.28,(Math.random()-0.5)*4);mainGeos.push(bump);
+}
+mainGeos.push(new THREE.BoxGeometry(5.5,0.25,5).translate(0,-0.35,-0.2));
+mainGeos.push(new THREE.BoxGeometry(4.8,0.22,4.3).translate(0,-0.6,-0.2));
+mainGeos.push(new THREE.BoxGeometry(4,0.25,3.5).translate(0,-0.85,-0.2));
+const mainMerged=THREE.BufferGeometryUtils.mergeBufferGeometries(mainGeos);
+applyFaceColoring(mainMerged,'#f8f8f6');
+const mainMesh=new THREE.Mesh(mainMerged,new THREE.MeshLambertMaterial({vertexColors:true}));
+mainMesh.castShadow=true;mainMesh.receiveShadow=true;scene.add(mainMesh);
+const trim1=new THREE.Mesh(new THREE.BoxGeometry(5.6,0.05,5.1),new THREE.MeshLambertMaterial({color:'#b8a4d4'}));
+trim1.position.set(0,-0.2,-0.2);scene.add(trim1);
+const trim2=new THREE.Mesh(new THREE.BoxGeometry(4.9,0.05,4.4),new THREE.MeshLambertMaterial({color:'#b8a4d4'}));
+trim2.position.set(0,-0.48,-0.2);scene.add(trim2);
 walkableMain.forEach(t=>addNode(t.x,t.z,0,'main'));
-
-// Platform B: Bridge (rotatable) - 3 tiles long
-// Bridge connects main to raised platform
-// At angle 0: extends from x=0,z=-3 to x=0,z=-5 (north)
-// At angle 90: extends from x=-3,z=-3... no wait let me simplify
-// Bridge pivot at (0, 0, -3.5) - connects main(0,-2) to raised(0,-5)
-// Bridge tiles (relative to pivot, at angle=0): (0,-0.5),(0,0.5),(0,1.5) world: (0,-3),(0,-4),(0,-5)... 
-// Let me redesign: bridge pivot at bridgeCenter
-
-const bridgeCenter={x:-3,z:0};
-// Bridge: 3 tiles, at angle 0 extends along Z: tiles at (-3,-1),(-3,0),(-3,1)
-// At angle 90 extends along X: tiles at (-4,0),(-3,0),(-2,0)
-
+addNode(doorPos.x,doorPos.z,0,'main');
+const bc=state.bridgeCenter;
 bridgeGroup=new THREE.Group();
-bridgeGroup.position.set(bridgeCenter.x*TILE,0,bridgeCenter.z*TILE);
+bridgeGroup.position.set(bc.x*TILE,0,bc.z*TILE);
 const bridgeGeos=[];
 for(let i=-1;i<=1;i++){
-const bg=new THREE.BoxGeometry(0.9,0.35,0.9);
-bg.translate(0,0,i*TILE);
-bridgeGeos.push(bg);
-// Cloud bumps
-const bump=new THREE.SphereGeometry(0.12,6,5);
-bump.translate((Math.random()-0.5)*0.4,0.18,i*TILE+(Math.random()-0.5)*0.3);
-bridgeGeos.push(bump);
+const bg=new THREE.BoxGeometry(0.88,0.4,0.88);
+bg.translate(0,0,i*TILE);bridgeGeos.push(bg);
+const bump=new THREE.SphereGeometry(0.08,6,5);
+bump.translate((Math.random()-0.5)*0.3,0.22,i*TILE);bridgeGeos.push(bump);
 }
 const bridgeMerged=THREE.BufferGeometryUtils.mergeBufferGeometries(bridgeGeos);
 applyFaceColoring(bridgeMerged,'#e8eef4');
-const bridgeMat=new THREE.MeshLambertMaterial({vertexColors:true});
-const bridgeMesh=new THREE.Mesh(bridgeMerged,bridgeMat);
-bridgeMesh.castShadow=true;bridgeMesh.receiveShadow=true;
-bridgeGroup.add(bridgeMesh);
-
-// Lavender trim on bridge edges
-const trimGeo2=new THREE.BoxGeometry(0.92,0.06,2.9);
-const trimMat2=new THREE.MeshLambertMaterial({color:'#b8a4d4'});
-const bridgeTrim=new THREE.Mesh(trimGeo2,trimMat2);
-bridgeTrim.position.y=-0.15;
-bridgeGroup.add(bridgeTrim);
-
+const bMesh=new THREE.Mesh(bridgeMerged,new THREE.MeshLambertMaterial({vertexColors:true}));
+bMesh.castShadow=true;bMesh.receiveShadow=true;bridgeGroup.add(bMesh);
+const btrim=new THREE.Mesh(new THREE.BoxGeometry(0.9,0.04,2.85),new THREE.MeshLambertMaterial({color:'#b8a4d4'}));
+btrim.position.y=-0.18;bridgeGroup.add(btrim);
 scene.add(bridgeGroup);
-
-// Dial (golden, clickable)
-const dialGeo=new THREE.CylinderGeometry(0.25,0.25,0.3,16);
-const dialMat2=new THREE.MeshLambertMaterial({color:'#e8c87a',emissive:'#e8c87a',emissiveIntensity:0.3});
-dialMesh=new THREE.Mesh(dialGeo,dialMat2);
-dialMesh.position.set(bridgeCenter.x*TILE,0.35,bridgeCenter.z*TILE);
-// Add notch marks
-const notchGeo=new THREE.BoxGeometry(0.05,0.32,0.5);
-const notchMat=new THREE.MeshLambertMaterial({color:'#c9a855'});
-const notch=new THREE.Mesh(notchGeo,notchMat);
-notch.position.set(bridgeCenter.x*TILE,0.35,bridgeCenter.z*TILE);
-scene.add(dialMesh);scene.add(notch);
-dialMesh.userData={type:'dial'};
-
-// Platform C: Raised platform (where boulder starts)
-// Located at (-3, 1.0, -3) — elevated
-const raisedPos={x:-3,z:-3,y:1.0};
-const raisedPlat=makeTieredPlatform(2.0,2.0,1.5,2,'#f5efe8',raisedPos.x,-0.1,raisedPos.z);
-scene.add(raisedPlat);
-// Ramp connecting raised to bridge end
-const rampGeo=new THREE.BoxGeometry(0.9,0.2,0.9);
-applyFaceColoring(rampGeo,'#f5efe8');
-const rampMat=new THREE.MeshLambertMaterial({vertexColors:true});
-const ramp=new THREE.Mesh(rampGeo,rampMat);
-ramp.position.set(-3,0.5,-2);
-scene.add(ramp);
-
-// Raised platform nodes (elevated)
-addNode(-3,-3,1.0,'raised');
-addNode(-3,-2,0.5,'ramp'); // ramp tile
-
-// Boulder
-const boulderGeo=new THREE.SphereGeometry(0.35,12,10);
-applyFaceColoring(boulderGeo,'#7a8899');
-const boulderMat=new THREE.MeshLambertMaterial({vertexColors:true});
-boulderMesh=new THREE.Mesh(boulderGeo,boulderMat);
-boulderMesh.position.set(-3,1.4,-3);
-boulderMesh.castShadow=true;
-boulderMesh.userData={type:'boulder',gridX:-3,gridZ:-3};
-scene.add(boulderMesh);
-
-// Pit (dark circle on main platform)
-const pitGeo=new THREE.CylinderGeometry(0.4,0.4,0.1,16);
-const pitMat=new THREE.MeshLambertMaterial({color:'#2a2035'});
-pitMesh=new THREE.Mesh(pitGeo,pitMat);
-pitMesh.position.set(pitPos.x*TILE,-0.15,pitPos.z*TILE);
-scene.add(pitMesh);
-
-// Door
+const dialGeo=new THREE.CylinderGeometry(0.28,0.28,0.3,16);
+dialMesh=new THREE.Mesh(dialGeo,new THREE.MeshLambertMaterial({color:'#e8c87a',emissive:'#e8c87a',emissiveIntensity:0.3}));
+dialMesh.position.set(bc.x*TILE,0.4,bc.z*TILE);dialMesh.castShadow=true;scene.add(dialMesh);
+const knob=new THREE.Mesh(new THREE.SphereGeometry(0.06,8,6),new THREE.MeshLambertMaterial({color:'#c9a855'}));
+knob.position.set(bc.x*TILE+0.18,0.5,bc.z*TILE);scene.add(knob);
+boulderMesh=new THREE.Mesh(new THREE.DodecahedronGeometry(0.32,1),new THREE.MeshLambertMaterial({color:'#7a8899'}));
+boulderMesh.position.set(0*TILE,0.45,1*TILE);boulderMesh.castShadow=true;
+boulderMesh.userData={type:'boulder',gridX:0,gridZ:1};scene.add(boulderMesh);
+const pitGeo=new THREE.CylinderGeometry(0.38,0.38,0.12,16);
+pitMesh=new THREE.Mesh(pitGeo,new THREE.MeshLambertMaterial({color:'#2a2035'}));
+pitMesh.position.set(pitPos.x*TILE,-0.08,pitPos.z*TILE);scene.add(pitMesh);
 const doorGroup=new THREE.Group();
-const doorFrame=new THREE.BoxGeometry(0.7,1.2,0.15);
-applyFaceColoring(doorFrame,'#e8c87a');
-const doorFrameMat=new THREE.MeshLambertMaterial({vertexColors:true,emissive:'#e8c87a',emissiveIntensity:0.1});
-const doorFrameMesh=new THREE.Mesh(doorFrame,doorFrameMat);
-doorFrameMesh.position.y=0.6;
-doorGroup.add(doorFrameMesh);
-// Arch top
-const archGeo=new THREE.SphereGeometry(0.35,12,8,0,Math.PI*2,0,Math.PI/2);
-const archMat=new THREE.MeshLambertMaterial({color:'#e8c87a',emissive:'#e8c87a',emissiveIntensity:0.1});
-const arch=new THREE.Mesh(archGeo,archMat);
-arch.position.y=1.2;
-doorGroup.add(arch);
+const df=new THREE.Mesh(new THREE.BoxGeometry(0.6,1.1,0.12),new THREE.MeshLambertMaterial({color:'#e8c87a',emissive:'#e8c87a',emissiveIntensity:0.1}));
+df.position.y=0.55;doorGroup.add(df);
+const ar=new THREE.Mesh(new THREE.SphereGeometry(0.3,12,8,0,Math.PI*2,0,Math.PI/2),new THREE.MeshLambertMaterial({color:'#e8c87a',emissive:'#e8c87a',emissiveIntensity:0.1}));
+ar.position.y=1.1;doorGroup.add(ar);
 doorGroup.position.set(doorPos.x*TILE,0,doorPos.z*TILE);
-doorGroup.userData={type:'door'};
-doorMesh=doorGroup;
-scene.add(doorGroup);
-
-// Store level data
-state.pitPos=pitPos;
-state.doorPos=doorPos;
-state.bridgeCenter=bridgeCenter;
-state.raisedPos=raisedPos;
-
-// Initial sheep position
-state.sheepPos={x:0,z:0};
-
-// Update bridge nodes
+doorMesh=doorGroup;scene.add(doorGroup);
 updateBridgeNodes();
+createSheep();
+sheepGroup.position.set(state.sheepPos.x*TILE,0,state.sheepPos.z*TILE);
 }
 
 function updateBridgeNodes(){
-// Remove old bridge nodes
 nodes=nodes.filter(n=>n.platformId!=='bridge');
 Object.keys(nodeMap).forEach(k=>{if(nodeMap[k].platformId==='bridge')delete nodeMap[k]});
-
 const bc=state.bridgeCenter;
 const angle=state.bridgeAngle;
-// Bridge tiles in local space: (0,-1),(0,0),(0,1)
 for(let i=-1;i<=1;i++){
 let wx,wz;
 if(angle===0){wx=bc.x;wz=bc.z+i;}
