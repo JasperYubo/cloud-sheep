@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>云羊记</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;touch-action:none;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+canvas{display:block;width:100%;height:100%}
+#ui{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:10}
+#title-screen{position:absolute;top:0;left:0;width:100%;height:100%;background:rgba(30,25,40,0.82);display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:all;transition:opacity 1s}
+#title-screen h1{font-family:'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;font-size:3.2em;color:#f8f8f6;letter-spacing:0.15em;margin-bottom:0.3em;text-shadow:0 0 30px rgba(232,200,122,0.4)}
+#title-screen h2{font-family:'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;font-size:1.1em;color:#b8a4d4;letter-spacing:0.3em;margin-bottom:2em}
+#title-screen p{font-family:'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;font-size:0.9em;color:rgba(248,248,246,0.6);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:0.6}50%{opacity:1}}
+#hint{position:absolute;bottom:15%;left:50%;transform:translateX(-50%);font-family:'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;font-size:0.85em;color:rgba(248,248,246,0.8);background:rgba(30,25,40,0.5);padding:8px 20px;border-radius:20px;opacity:0;transition:opacity 0.5s;white-space:nowrap}
+#end-screen{position:absolute;top:0;left:0;width:100%;height:100%;background:rgba(255,255,255,0);display:flex;align-items:center;justify-content:center;pointer-events:none;opacity:0;transition:opacity 1.5s}
+#end-screen h1{font-family:'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;font-size:2.5em;color:#4a4055;letter-spacing:0.2em}
+</style>
+</head>
+<body>
+<div id="ui">
+<div id="title-screen" style="display:none"></div>
+<div id="hint"></div>
+<div id="end-screen"><h1>第一章 · 完</h1></div>
+</div>
+<script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/utils/BufferGeometryUtils.js"></script>
+<script>
+(function(){
+// === CONSTANTS & STATE ===
+const TILE=1.0;
+const state={started:false,moving:false,bridgeAngle:0,bridgeRotating:false,boulderPushed:false,pitFilled:false,doorOpen:false,complete:false,sheepPos:{x:0,z:0},sheepTarget:null,path:[],pathIdx:0,walkBounce:0};
+let scene,camera,renderer,clock;
+let sheepGroup,bridgeGroup,boulderMesh,dialMesh,doorMesh,pitMesh;
+let platforms=[],nodes=[],dustParticles=[];
+let audioCtx=null;
+
+// === AUDIO ===
+function initAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)()}
+function playTone(freq,dur,type,vol){
+if(!audioCtx)return;
+const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+o.type=type||'sine';o.frequency.value=freq;
+g.gain.setValueAtTime((vol||0.15),audioCtx.currentTime);
+g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
+o.connect(g);g.connect(audioCtx.destination);
+o.start();o.stop(audioCtx.currentTime+dur);
+}
+function playStep(){const n=[523,587,659,784,880];playTone(n[Math.floor(Math.random()*5)],0.1,'triangle',0.08)}
+function playDial(){playTone(392,0.4,'sine',0.12);setTimeout(()=>playTone(523,0.3,'sine',0.1),200)}
+function playBoulder(){playTone(130,0.5,'triangle',0.2)}
+function playDoor(){playTone(659,0.6,'sine',0.15);setTimeout(()=>playTone(784,0.5,'sine',0.12),300)}
+function playComplete(){const ns=[523,659,784,1047];ns.forEach((n,i)=>setTimeout(()=>playTone(n,0.8,'sine',0.12),i*300))}
+
+// === SCENE SETUP ===
+function init(){
+clock=new THREE.Clock();
+scene=new THREE.Scene();
+scene.background=new THREE.Color('#e8f4f8');
+
+const aspect=window.innerWidth/window.innerHeight;
+const size=7;
+camera=new THREE.OrthographicCamera(-size*aspect,size*aspect,size,-size,0.1,100);
+camera.position.set(10,10,10);
+camera.lookAt(0,0,0);
+
+renderer=new THREE.WebGLRenderer({antialias:true,alpha:false});
+renderer.setSize(window.innerWidth,window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+renderer.shadowMap.enabled=true;
+renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+document.body.insertBefore(renderer.domElement,document.getElementById('ui'));
+
+// Lights
+const amb=new THREE.AmbientLight(0xffffff,0.6);scene.add(amb);
+const dir=new THREE.DirectionalLight(0xfff8e8,0.7);
+dir.position.set(5,10,5);dir.castShadow=true;
+dir.shadow.mapSize.set(1024,1024);
+dir.shadow.camera.left=-12;dir.shadow.camera.right=12;
+dir.shadow.camera.top=12;dir.shadow.camera.bottom=-12;
+scene.add(dir);
+const fill=new THREE.DirectionalLight(0xe8eeff,0.3);
+fill.position.set(-5,5,-5);scene.add(fill);
+
+// Sky gradient plane
+const skyGeo=new THREE.PlaneGeometry(60,60);
+const skyMat=new THREE.ShaderMaterial({
+uniforms:{},
+vertexShader:`varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`,
+fragmentShader:`varying vec2 vUv;void main(){vec3 top=vec3(0.91,0.96,0.97);vec3 bot=vec3(1.0,0.83,0.72);gl_FragColor=vec4(mix(bot,top,vUv.y),1.0);}`,
+depthWrite:false
+});
+const skyMesh=new THREE.Mesh(skyGeo,skyMat);
+skyMesh.position.set(0,0,-20);
+skyMesh.lookAt(camera.position);
+scene.add(skyMesh);
+
+buildLevel();
+createSheep();
+createDust();
+createBackgroundClouds();
+
+window.addEventListener('resize',onResize);
+document.addEventListener('pointerdown',onPointerDown);
+document.addEventListener('pointerup',onPointerUp);
+
+// Auto-start game immediately
+state.started=true;
+showHint('点击地面移动小羊，点击金色转盘旋转桥梁');
+
+animate();
+}
+
+// === GEOMETRY HELPERS ===
+function makeCloudPlatform(w,d,h,color,x,y,z){
+const geos=[];
+// Main body
+const mainGeo=new THREE.BoxGeometry(w,h,d);
+mainGeo.translate(0,0,0);
+geos.push(mainGeo);
+// Rounded edges - spheres at corners top
+const r=Math.min(w,d)*0.15;
+for(let ix=-1;ix<=1;ix+=2){
+for(let iz=-1;iz<=1;iz+=2){
+const s=new THREE.SphereGeometry(r,8,6);
+s.translate(ix*(w/2-r),h/2-r*0.5,iz*(d/2-r));
+geos.push(s);
+}
+}
+// Top bumps for cloud feel
+for(let i=0;i<3;i++){
+const bx=(Math.random()-0.5)*w*0.6;
+const bz=(Math.random()-0.5)*d*0.6;
+const br=0.15+Math.random()*0.15;
+const bump=new THREE.SphereGeometry(br,6,5);
+bump.translate(bx,h/2,bz);
+geos.push(bump);
+}
+const merged=THREE.BufferGeometryUtils.mergeBufferGeometries(geos);
+applyFaceColoring(merged,color);
+merged.translate(x,y,z);
+const mat=new THREE.MeshLambertMaterial({vertexColors:true});
+const mesh=new THREE.Mesh(merged,mat);
+mesh.castShadow=true;mesh.receiveShadow=true;
+return mesh;
+}
+
+function applyFaceColoring(geo,baseColor){
+const pos=geo.attributes.position;
+const norm=geo.attributes.normal;
+const colors=new Float32Array(pos.count*3);
+const base=new THREE.Color(baseColor);
+for(let i=0;i<pos.count;i++){
+const ny=norm.getY(i);
+let brightness=0.7+ny*0.3;
+if(ny>0.5)brightness=1.0;
+else if(ny<-0.5)brightness=0.55;
+else brightness=0.65+ny*0.2;
+colors[i*3]=base.r*brightness;
+colors[i*3+1]=base.g*brightness;
+colors[i*3+2]=base.b*brightness;
+}
+geo.setAttribute('color',new THREE.BufferAttribute(colors,3));
+}
+
+function makeTieredPlatform(w,d,h,tiers,color,x,y,z){
+const group=new THREE.Group();
+for(let t=0;t<tiers;t++){
+const scale=1-t*0.12;
+const tw=w*scale,td=d*scale;
+const th=h/tiers;
+const ty=-h/2+th*t+th/2;
+const p=makeCloudPlatform(tw,td,th,color,0,ty,0);
+group.add(p);
+}
+// Lavender trim band
+const trimGeo=new THREE.TorusGeometry(Math.min(w,d)*0.45,0.04,8,24);
+const trimMat=new THREE.MeshLambertMaterial({color:'#b8a4d4'});
+const trim=new THREE.Mesh(trimGeo,trimMat);
+trim.rotation.x=Math.PI/2;trim.position.y=h*0.1;
+group.add(trim);
+group.position.set(x,y,z);
+return group;
+}
+
+// === LEVEL BUILD ===
+// Node system: each walkable tile has {x,z,y,ports:[...],id}
+// Ports are edge midpoints where connections can form
+let nodeMap={};
+function nkey(x,z){return x+','+z}
+function addNode(x,z,y,platformId){
+const n={x,z,y,id:nkey(x,z),platformId,ports:[]};
+// 4 cardinal ports
+n.ports.push({x:x+0.5,z:z,y:y});
+n.ports.push({x:x-0.5,z:z,y:y});
+n.ports.push({x:x,z:z+0.5,y:y});
+n.ports.push({x:x,z:z-0.5,y:y});
+nodes.push(n);
+nodeMap[n.id]=n;
+return n;
+}
+
+function buildLevel(){
+// Platform A: Main cloud (center) - tiles at y=0
+// Roughly circular: a cluster of tiles
+const mainTiles=[
+{x:0,z:0},{x:1,z:0},{x:-1,z:0},{x:0,z:1},{x:0,z:-1},
+{x:1,z:1},{x:-1,z:-1},{x:1,z:-1},{x:-1,z:1},
+{x:2,z:0},{x:-2,z:0},{x:0,z:2},{x:0,z:-2},
+{x:2,z:1},{x:2,z:-1},{x:-2,z:1},{x:-2,z:-1},
+{x:1,z:2},{x:-1,z:2},{x:1,z:-2},{x:-1,z:-2}
+];
+
+// Pit location
+const pitPos={x:2,z:0};
+// Door location
+const doorPos={x:3,z:0};
+
+// Remove pit tile from walkable initially, add door tile
+const walkableMain=mainTiles.filter(t=>!(t.x===pitPos.x&&t.z===pitPos.z));
+walkableMain.push({x:3,z:0}); // door tile
+
+// Build main platform visual
+const mainPlatGroup=new THREE.Group();
+const mainBase=makeTieredPlatform(5.5,5.5,1.2,3,'#f8f8f6',0,-0.8,0);
+mainPlatGroup.add(mainBase);
+// Door extension
+const doorExt=makeCloudPlatform(1.2,1.2,0.8,'#e8eef4',3,-0.4,0);
+mainPlatGroup.add(doorExt);
+scene.add(mainPlatGroup);
+
+// Add nodes for main platform
+walkableMain.forEach(t=>addNode(t.x,t.z,0,'main'));
+
+// Platform B: Bridge (rotatable) - 3 tiles long
+// Bridge connects main to raised platform
+// At angle 0: extends from x=0,z=-3 to x=0,z=-5 (north)
+// At angle 90: extends from x=-3,z=-3... no wait let me simplify
+// Bridge pivot at (0, 0, -3.5) - connects main(0,-2) to raised(0,-5)
+// Bridge tiles (relative to pivot, at angle=0): (0,-0.5),(0,0.5),(0,1.5) world: (0,-3),(0,-4),(0,-5)... 
+// Let me redesign: bridge pivot at bridgeCenter
+
+const bridgeCenter={x:-3,z:0};
+// Bridge: 3 tiles, at angle 0 extends along Z: tiles at (-3,-1),(-3,0),(-3,1)
+// At angle 90 extends along X: tiles at (-4,0),(-3,0),(-2,0)
+
+bridgeGroup=new THREE.Group();
+bridgeGroup.position.set(bridgeCenter.x*TILE,0,bridgeCenter.z*TILE);
+const bridgeGeos=[];
+for(let i=-1;i<=1;i++){
+const bg=new THREE.BoxGeometry(0.9,0.35,0.9);
+bg.translate(0,0,i*TILE);
+bridgeGeos.push(bg);
+// Cloud bumps
+const bump=new THREE.SphereGeometry(0.12,6,5);
+bump.translate((Math.random()-0.5)*0.4,0.18,i*TILE+(Math.random()-0.5)*0.3);
+bridgeGeos.push(bump);
+}
+const bridgeMerged=THREE.BufferGeometryUtils.mergeBufferGeometries(bridgeGeos);
+applyFaceColoring(bridgeMerged,'#e8eef4');
+const bridgeMat=new THREE.MeshLambertMaterial({vertexColors:true});
+const bridgeMesh=new THREE.Mesh(bridgeMerged,bridgeMat);
+bridgeMesh.castShadow=true;bridgeMesh.receiveShadow=true;
+bridgeGroup.add(bridgeMesh);
+
+// Lavender trim on bridge edges
+const trimGeo2=new THREE.BoxGeometry(0.92,0.06,2.9);
+const trimMat2=new THREE.MeshLambertMaterial({color:'#b8a4d4'});
+const bridgeTrim=new THREE.Mesh(trimGeo2,trimMat2);
+bridgeTrim.position.y=-0.15;
+bridgeGroup.add(bridgeTrim);
+
+scene.add(bridgeGroup);
+
+// Dial (golden, clickable)
+const dialGeo=new THREE.CylinderGeometry(0.25,0.25,0.3,16);
+const dialMat2=new THREE.MeshLambertMaterial({color:'#e8c87a',emissive:'#e8c87a',emissiveIntensity:0.3});
+dialMesh=new THREE.Mesh(dialGeo,dialMat2);
+dialMesh.position.set(bridgeCenter.x*TILE,0.35,bridgeCenter.z*TILE);
+// Add notch marks
+const notchGeo=new THREE.BoxGeometry(0.05,0.32,0.5);
+const notchMat=new THREE.MeshLambertMaterial({color:'#c9a855'});
+const notch=new THREE.Mesh(notchGeo,notchMat);
+notch.position.set(bridgeCenter.x*TILE,0.35,bridgeCenter.z*TILE);
+scene.add(dialMesh);scene.add(notch);
+dialMesh.userData={type:'dial'};
+
+// Platform C: Raised platform (where boulder starts)
+// Located at (-3, 1.0, -3) — elevated
+const raisedPos={x:-3,z:-3,y:1.0};
+const raisedPlat=makeTieredPlatform(2.0,2.0,1.5,2,'#f5efe8',raisedPos.x,-0.1,raisedPos.z);
+scene.add(raisedPlat);
+// Ramp connecting raised to bridge end
+const rampGeo=new THREE.BoxGeometry(0.9,0.2,0.9);
+applyFaceColoring(rampGeo,'#f5efe8');
+const rampMat=new THREE.MeshLambertMaterial({vertexColors:true});
+const ramp=new THREE.Mesh(rampGeo,rampMat);
+ramp.position.set(-3,0.5,-2);
+scene.add(ramp);
+
+// Raised platform nodes (elevated)
+addNode(-3,-3,1.0,'raised');
+addNode(-3,-2,0.5,'ramp'); // ramp tile
+
+// Boulder
+const boulderGeo=new THREE.SphereGeometry(0.35,12,10);
+applyFaceColoring(boulderGeo,'#7a8899');
+const boulderMat=new THREE.MeshLambertMaterial({vertexColors:true});
+boulderMesh=new THREE.Mesh(boulderGeo,boulderMat);
+boulderMesh.position.set(-3,1.4,-3);
+boulderMesh.castShadow=true;
+boulderMesh.userData={type:'boulder',gridX:-3,gridZ:-3};
+scene.add(boulderMesh);
+
+// Pit (dark circle on main platform)
+const pitGeo=new THREE.CylinderGeometry(0.4,0.4,0.1,16);
+const pitMat=new THREE.MeshLambertMaterial({color:'#2a2035'});
+pitMesh=new THREE.Mesh(pitGeo,pitMat);
+pitMesh.position.set(pitPos.x*TILE,-0.15,pitPos.z*TILE);
+scene.add(pitMesh);
+
+// Door
+const doorGroup=new THREE.Group();
+const doorFrame=new THREE.BoxGeometry(0.7,1.2,0.15);
+applyFaceColoring(doorFrame,'#e8c87a');
+const doorFrameMat=new THREE.MeshLambertMaterial({vertexColors:true,emissive:'#e8c87a',emissiveIntensity:0.1});
+const doorFrameMesh=new THREE.Mesh(doorFrame,doorFrameMat);
+doorFrameMesh.position.y=0.6;
+doorGroup.add(doorFrameMesh);
+// Arch top
+const archGeo=new THREE.SphereGeometry(0.35,12,8,0,Math.PI*2,0,Math.PI/2);
+const archMat=new THREE.MeshLambertMaterial({color:'#e8c87a',emissive:'#e8c87a',emissiveIntensity:0.1});
+const arch=new THREE.Mesh(archGeo,archMat);
+arch.position.y=1.2;
+doorGroup.add(arch);
+doorGroup.position.set(doorPos.x*TILE,0,doorPos.z*TILE);
+doorGroup.userData={type:'door'};
+doorMesh=doorGroup;
+scene.add(doorGroup);
+
+// Store level data
+state.pitPos=pitPos;
+state.doorPos=doorPos;
+state.bridgeCenter=bridgeCenter;
+state.raisedPos=raisedPos;
+
+// Initial sheep position
+state.sheepPos={x:0,z:0};
+
+// Update bridge nodes
+updateBridgeNodes();
+}
+
+function updateBridgeNodes(){
+// Remove old bridge nodes
+nodes=nodes.filter(n=>n.platformId!=='bridge');
+Object.keys(nodeMap).forEach(k=>{if(nodeMap[k].platformId==='bridge')delete nodeMap[k]});
+
+const bc=state.bridgeCenter;
+const angle=state.bridgeAngle;
+// Bridge tiles in local space: (0,-1),(0,0),(0,1)
+for(let i=-1;i<=1;i++){
+let wx,wz;
+if(angle===0){wx=bc.x;wz=bc.z+i;}
+else if(angle===90){wx=bc.x+i;wz=bc.z;}
+else if(angle===180){wx=bc.x;wz=bc.z-i;}
+else{wx=bc.x-i;wz=bc.z;}
+addNode(wx,wz,0,'bridge');
+}
+}
+
+// === PATHFINDING ===
+function getNeighbors(node){
+const neighbors=[];
+// Check all other nodes for shared port positions (within tolerance)
+const tol=0.01;
+for(const other of nodes){
+if(other.id===node.id)continue;
+// Skip pit if not filled
+if(!state.pitFilled&&other.x===state.pitPos.x&&other.z===state.pitPos.z)continue;
+// Skip boulder position
+if(!state.boulderPushed&&other.x===boulderMesh.userData.gridX&&other.z===boulderMesh.userData.gridZ)continue;
+// Check port adjacency: a port of node matches a port of other
+let connected=false;
+for(const p1 of node.ports){
+for(const p2 of other.ports){
+if(Math.abs(p1.x-p2.x)<tol&&Math.abs(p1.z-p2.z)<tol&&Math.abs(p1.y-p2.y)<0.6){
+connected=true;break;
+}
+}
+if(connected)break;
+}
+if(connected)neighbors.push(other);
+}
+return neighbors;
+}
+
+function findPath(startX,startZ,endX,endZ){
+const startKey=nkey(startX,startZ);
+const endKey=nkey(endX,endZ);
+if(!nodeMap[startKey]||!nodeMap[endKey])return null;
+
+const queue=[startKey];
+const visited=new Set([startKey]);
+const parent={};
+parent[startKey]=null;
+
+while(queue.length>0){
+const cur=queue.shift();
+if(cur===endKey){
+const path=[];
+let c=cur;
+while(c!==null){path.unshift(nodeMap[c]);c=parent[c]}
+return path;
+}
+const curNode=nodeMap[cur];
+for(const nb of getNeighbors(curNode)){
+if(!visited.has(nb.id)){
+visited.add(nb.id);
+parent[nb.id]=cur;
+queue.push(nb.id);
+}
+}
+}
+return null;
+}
+
+// === SHEEP ===
+function createSheep(){
+sheepGroup=new THREE.Group();
+// Body
+const bodyGeo=new THREE.SphereGeometry(0.22,12,10);
+bodyGeo.scale(1,0.8,1.1);
+const bodyMat=new THREE.MeshLambertMaterial({color:'#fafafa'});
+const body=new THREE.Mesh(bodyGeo,bodyMat);
+body.position.y=0.3;body.castShadow=true;
+sheepGroup.add(body);
+
+// Fluffy wool bumps
+for(let i=0;i<6;i++){
+const wool=new THREE.SphereGeometry(0.08,6,5);
+const woolMesh=new THREE.Mesh(wool,bodyMat);
+const a=i/6*Math.PI*2;
+woolMesh.position.set(Math.cos(a)*0.15,0.38,Math.sin(a)*0.15);
+sheepGroup.add(woolMesh);
+}
+
+// Head
+const headGeo=new THREE.SphereGeometry(0.13,10,8);
+const headMat=new THREE.MeshLambertMaterial({color:'#f0f0ee'});
+const head=new THREE.Mesh(headGeo,headMat);
+head.position.set(0,0.4,0.22);head.castShadow=true;
+sheepGroup.add(head);
+
+// Eyes
+const eyeGeo=new THREE.SphereGeometry(0.025,6,5);
+const eyeMat=new THREE.MeshBasicMaterial({color:'#1a1a1a'});
+const eyeL=new THREE.Mesh(eyeGeo,eyeMat);
+eyeL.position.set(-0.05,0.42,0.32);
+const eyeR=new THREE.Mesh(eyeGeo,eyeMat);
+eyeR.position.set(0.05,0.42,0.32);
+sheepGroup.add(eyeL,eyeR);
+
+// Ears
+const earGeo=new THREE.SphereGeometry(0.05,6,5);
+earGeo.scale(1,0.5,1.5);
+const earMat=new THREE.MeshLambertMaterial({color:'#e8e0d8'});
+const earL=new THREE.Mesh(earGeo,earMat);
+earL.position.set(-0.1,0.45,0.18);earL.rotation.z=0.5;
+const earR=new THREE.Mesh(earGeo,earMat);
+earR.position.set(0.1,0.45,0.18);earR.rotation.z=-0.5;
+sheepGroup.add(earL,earR);
+
+// Legs
+const legGeo=new THREE.CylinderGeometry(0.03,0.025,0.2,6);
+const legMat=new THREE.MeshLambertMaterial({color:'#d0c8c0'});
+const offsets=[[-0.08,-0.08],[0.08,-0.08],[-0.08,0.08],[0.08,0.08]];
+offsets.forEach(([ox,oz])=>{
+const leg=new THREE.Mesh(legGeo,legMat);
+leg.position.set(ox,0.1,oz);
+sheepGroup.add(leg);
+});
+
+// Tiny tail
+const tailGeo=new THREE.SphereGeometry(0.06,6,5);
+const tail=new THREE.Mesh(tailGeo,bodyMat);
+tail.position.set(0,0.3,-0.22);
+sheepGroup.add(tail);
+
+sheepGroup.position.set(0,0,0);
+sheepGroup.scale.set(0.9,0.9,0.9);
+scene.add(sheepGroup);
+}
+
+// === DUST PARTICLES ===
+function createDust(){
+for(let i=0;i<30;i++){
+const geo=new THREE.SphereGeometry(0.02+Math.random()*0.02,4,4);
+const mat=new THREE.MeshBasicMaterial({color:'#ffffff',transparent:true,opacity:0.3+Math.random()*0.3});
+const p=new THREE.Mesh(geo,mat);
+p.position.set((Math.random()-0.5)*12,Math.random()*5,(Math.random()-0.5)*12);
+p.userData={vy:0.002+Math.random()*0.003,vx:(Math.random()-0.5)*0.001,phase:Math.random()*Math.PI*2};
+scene.add(p);
+dustParticles.push(p);
+}
+}
+
+function createBackgroundClouds(){
+for(let i=0;i<8;i++){
+const geos=[];
+const count=3+Math.floor(Math.random()*3);
+for(let j=0;j<count;j++){
+const s=new THREE.SphereGeometry(0.3+Math.random()*0.4,8,6);
+s.translate((Math.random()-0.5)*0.8,0,(Math.random()-0.5)*0.5);
+geos.push(s);
+}
+const merged=THREE.BufferGeometryUtils.mergeBufferGeometries(geos);
+const mat=new THREE.MeshLambertMaterial({color:'#ffffff',transparent:true,opacity:0.4});
+const cloud=new THREE.Mesh(merged,mat);
+const angle=i/8*Math.PI*2;
+const dist=8+Math.random()*4;
+cloud.position.set(Math.cos(angle)*dist,2+Math.random()*3,Math.sin(angle)*dist);
+cloud.userData={angle,dist,speed:0.0003+Math.random()*0.0003};
+scene.add(cloud);
+dustParticles.push(cloud); // reuse array for updates
+}
+}
+
+// === INPUT ===
+let pointerStart=null;
+function onPointerDown(e){pointerStart={x:e.clientX,y:e.clientY,time:Date.now()}}
+function onPointerUp(e){
+if(!pointerStart)return;
+const dx=e.clientX-pointerStart.x,dy=e.clientY-pointerStart.y;
+const dist=Math.sqrt(dx*dx+dy*dy);
+const dt=Date.now()-pointerStart.time;
+pointerStart=null;
+if(dist>20||dt>500)return; // not a tap
+
+if(!state.started){startGame();initAudio();return}
+if(state.complete||state.moving||state.bridgeRotating)return;
+
+initAudio();
+// Raycast
+const rect=renderer.domElement.getBoundingClientRect();
+const mouse=new THREE.Vector2(
+((e.clientX-rect.left)/rect.width)*2-1,
+-((e.clientY-rect.top)/rect.height)*2+1
+);
+const raycaster=new THREE.Raycaster();
+raycaster.setFromCamera(mouse,camera);
+
+// Check dial
+const dialHits=raycaster.intersectObject(dialMesh);
+if(dialHits.length>0){rotateBridge();return}
+
+// Check boulder
+if(!state.boulderPushed){
+const bHits=raycaster.intersectObject(boulderMesh);
+if(bHits.length>0){pushBoulder();return}
+}
+
+// Check ground - find closest node to hit point
+const plane=new THREE.Plane(new THREE.Vector3(0,1,0),0);
+const hitPoint=new THREE.Vector3();
+raycaster.ray.intersectPlane(plane,hitPoint);
+if(!hitPoint)return;
+
+// Find closest walkable node
+let closest=null,closestDist=Infinity;
+for(const n of nodes){
+if(!state.pitFilled&&n.x===state.pitPos.x&&n.z===state.pitPos.z)continue;
+const d=Math.pow(n.x*TILE-hitPoint.x,2)+Math.pow(n.z*TILE-hitPoint.z,2);
+if(d<closestDist){closestDist=d;closest=n}
+}
+if(!closest||closestDist>2)return;
+
+// Find path
+const path=findPath(state.sheepPos.x,state.sheepPos.z,closest.x,closest.z);
+if(path&&path.length>1){
+state.path=path;state.pathIdx=1;state.moving=true;
+}
+}
+
+// === MECHANICS ===
+function rotateBridge(){
+if(state.bridgeRotating)return;
+state.bridgeRotating=true;
+playDial();
+const targetAngle=(state.bridgeAngle+90)%360;
+const startRot=bridgeGroup.rotation.y;
+const endRot=startRot-Math.PI/2;
+const duration=600;
+const startTime=Date.now();
+function animRot(){
+const t=Math.min((Date.now()-startTime)/duration,1);
+const ease=t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
+bridgeGroup.rotation.y=startRot+(endRot-startRot)*ease;
+if(t<1){requestAnimationFrame(animRot)}
+else{
+state.bridgeAngle=targetAngle;
+state.bridgeRotating=false;
+updateBridgeNodes();
+}
+}
+animRot();
+}
+
+function pushBoulder(){
+// Sheep must be adjacent to boulder
+const bx=boulderMesh.userData.gridX,bz=boulderMesh.userData.gridZ;
+const sx=state.sheepPos.x,sz=state.sheepPos.z;
+const dx=bx-sx,dz=bz-sz;
+if(Math.abs(dx)+Math.abs(dz)!==1)return; // not adjacent
+
+// Push direction
+const tx=bx+dx,tz=bz+dz;
+// Check if boulder can go there (either into pit or off edge)
+playBoulder();
+
+if(tx===state.pitPos.x&&tz===state.pitPos.z){
+// Boulder goes into pit!
+state.boulderPushed=true;
+animateBoulderFall(bx,bz,tx,tz,true);
+}else{
+// Check if target is walkable - if so push there
+const targetNode=nodeMap[nkey(tx,tz)];
+if(targetNode){
+boulderMesh.userData.gridX=tx;
+boulderMesh.userData.gridZ=tz;
+animateBoulderPush(bx,bz,tx,tz);
+}
+}
+}
+
+function animateBoulderPush(fx,fz,tx,tz){
+const start={x:fx*TILE,z:fz*TILE};
+const end={x:tx*TILE,z:tz*TILE};
+const duration=300;const startTime=Date.now();
+function anim(){
+const t=Math.min((Date.now()-startTime)/duration,1);
+boulderMesh.position.x=start.x+(end.x-start.x)*t;
+boulderMesh.position.z=start.z+(end.z-start.z)*t;
+if(t<1)requestAnimationFrame(anim);
+}
+anim();
+}
+
+function animateBoulderFall(fx,fz,tx,tz,intoPit){
+const start={x:fx*TILE,y:boulderMesh.position.y,z:fz*TILE};
+const end={x:tx*TILE,y:-0.3,z:tz*TILE};
+const duration=500;const startTime=Date.now();
+function anim(){
+const t=Math.min((Date.now()-startTime)/duration,1);
+const ease=t*t;
+boulderMesh.position.x=start.x+(end.x-start.x)*t;
+boulderMesh.position.y=start.y+(end.y-start.y)*ease;
+boulderMesh.position.z=start.z+(end.z-start.z)*t;
+boulderMesh.rotation.x+=0.1;
+if(t<1)requestAnimationFrame(anim);
+else if(intoPit)fillPit();
+}
+anim();
+}
+
+function fillPit(){
+state.pitFilled=true;
+// Change pit appearance
+pitMesh.material.color.set('#c8c0b8');
+pitMesh.material.emissive=new THREE.Color('#000000');
+// Add the pit position as walkable
+addNode(state.pitPos.x,state.pitPos.z,0,'main');
+// Activate door
+state.doorOpen=true;
+doorMesh.children.forEach(c=>{
+if(c.material){c.material.emissiveIntensity=0.5}
+});
+playDoor();
+showHint('门开了...');
+}
+
+function checkDoor(){
+if(state.doorOpen&&state.sheepPos.x===state.doorPos.x&&state.sheepPos.z===state.doorPos.z){
+completeLevel();
+}
+}
+
+function completeLevel(){
+state.complete=true;
+playComplete();
+// White flash then end screen
+const endEl=document.getElementById('end-screen');
+endEl.style.background='rgba(255,255,255,1)';
+endEl.style.opacity='1';
+endEl.style.pointerEvents='all';
+setTimeout(()=>{endEl.style.background='rgba(255,255,255,0.85)'},1500);
+}
+
+// === GAME FLOW ===
+function startGame(){
+state.started=true;
+const title=document.getElementById('title-screen');
+title.style.opacity='0';
+setTimeout(()=>{title.style.display='none'},1000);
+// Camera sweep
+const startPos=camera.position.clone();
+camera.position.set(14,14,14);
+const duration=1500;const startTime=Date.now();
+function sweep(){
+const t=Math.min((Date.now()-startTime)/duration,1);
+const ease=1-Math.pow(1-t,3);
+camera.position.lerpVectors(new THREE.Vector3(14,14,14),startPos,ease);
+camera.lookAt(0,0,0);
+if(t<1)requestAnimationFrame(sweep);
+else showHint('点击地面移动小羊，点击金色转盘旋转桥梁');
+}
+sweep();
+}
+
+function showHint(text){
+const h=document.getElementById('hint');
+h.textContent=text;h.style.opacity='1';
+setTimeout(()=>{h.style.opacity='0'},4000);
+}
+
+// === ANIMATION ===
+function animate(){
+requestAnimationFrame(animate);
+const dt=clock.getDelta();
+
+// Move sheep along path
+if(state.moving&&state.path.length>0){
+const target=state.path[state.pathIdx];
+const tx=target.x*TILE,tz=target.z*TILE;
+const dx=tx-sheepGroup.position.x,dz=tz-sheepGroup.position.z;
+const dist=Math.sqrt(dx*dx+dz*dz);
+const speed=2.5*dt;
+
+if(dist<speed){
+sheepGroup.position.x=tx;sheepGroup.position.z=tz;
+state.sheepPos={x:target.x,z:target.z};
+state.pathIdx++;
+playStep();
+if(state.pathIdx>=state.path.length){
+state.moving=false;state.path=[];
+checkDoor();
+}
+}else{
+sheepGroup.position.x+=dx/dist*speed;
+sheepGroup.position.z+=dz/dist*speed;
+// Face direction
+sheepGroup.rotation.y=Math.atan2(dx,dz);
+// Bounce
+state.walkBounce+=dt*12;
+sheepGroup.position.y=Math.abs(Math.sin(state.walkBounce))*0.06;
+}
+}else{
+// Idle gentle bob
+sheepGroup.position.y=Math.sin(Date.now()*0.002)*0.015;
+}
+
+// Dust particles
+dustParticles.forEach(p=>{
+if(p.userData.vy){
+p.position.y+=p.userData.vy;
+p.position.x+=Math.sin(Date.now()*0.001+p.userData.phase)*0.002;
+if(p.position.y>5)p.position.y=-1;
+}else if(p.userData.angle!==undefined){
+p.userData.angle+=p.userData.speed;
+p.position.x=Math.cos(p.userData.angle)*p.userData.dist;
+p.position.z=Math.sin(p.userData.angle)*p.userData.dist;
+}
+});
+
+// Door glow pulse
+if(state.doorOpen&&doorMesh){
+const pulse=0.3+Math.sin(Date.now()*0.003)*0.2;
+doorMesh.children.forEach(c=>{if(c.material&&c.material.emissiveIntensity!==undefined)c.material.emissiveIntensity=pulse});
+}
+
+// Dial gentle spin
+if(dialMesh&&!state.bridgeRotating){
+dialMesh.rotation.y+=dt*0.5;
+}
+
+renderer.render(scene,camera);
+}
+
+function onResize(){
+const aspect=window.innerWidth/window.innerHeight;
+const size=7;
+camera.left=-size*aspect;camera.right=size*aspect;
+camera.top=size;camera.bottom=-size;
+camera.updateProjectionMatrix();
+renderer.setSize(window.innerWidth,window.innerHeight);
+}
+
+init();
+})();
+</script>
+</body>
+</html>
